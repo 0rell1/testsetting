@@ -98,10 +98,13 @@ async function login(){
   if(!clientId()){setupScreen();return;}
   const verifier=rnd(48), state=rnd(12), challenge=b64u(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(verifier)));
   ls.set('pkce',JSON.stringify({verifier,state,t:Date.now()}));
-  const q=new URLSearchParams({client_id:clientId(),response_type:'code',redirect_uri:REDIRECT,response_mode:'query',scope:scope(),code_challenge:challenge,code_challenge_method:'S256',state});
+  const q=new URLSearchParams({client_id:clientId(),response_type:'code',redirect_uri:REDIRECT,response_mode:'query',scope:scope()+' openid profile',code_challenge:challenge,code_challenge_method:'S256',state});
+  const hint=ls.get('user'); if(hint)q.set('login_hint',hint);
   location.assign(AUTH+'/authorize?'+q.toString());
 }
-function storeTokens(j){const old=JSON.parse(ls.get('tok')||'{}');ls.set('tok',JSON.stringify({access:j.access_token,exp:Date.now()+(j.expires_in||3600)*1000,refresh:j.refresh_token||old.refresh||''}));}
+function storeTokens(j){const old=JSON.parse(ls.get('tok')||'{}');
+  if(j.id_token){try{const c=JSON.parse(decodeURIComponent(escape(atob(j.id_token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')))));if(c.preferred_username||c.email)ls.set('user',c.preferred_username||c.email);}catch(e){}}
+  ls.set('had','1');ls.set('tok',JSON.stringify({access:j.access_token,exp:Date.now()+(j.expires_in||3600)*1000,refresh:j.refresh_token||old.refresh||''}));}
 async function tokenRequest(params){
   const r=await fetch(AUTH+'/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(Object.assign({client_id:clientId(),scope:scope()},params)).toString()});
   const j=await r.json().catch(()=>({}));
@@ -111,10 +114,10 @@ async function tokenRequest(params){
 async function handleRedirect(){
   const p=new URLSearchParams(location.search); if(!p.has('code')&&!p.has('error'))return null;
   const clean=()=>{try{history.replaceState(null,'',REDIRECT);}catch(e){}};
-  if(p.has('error')){const m=p.get('error')+': '+(p.get('error_description')||'');clean();return m;}
+  if(p.has('error')){const c=p.get('error'),m=/^(login_required|interaction_required|access_denied)$/.test(c)?'Die Anmeldung wurde nicht abgeschlossen.':c+': '+(p.get('error_description')||'');clean();return m;}
   const pk=JSON.parse(ls.get('pkce')||'null'); ls.del('pkce'); const code=p.get('code'), st=p.get('state'); clean();
   if(!pk||pk.state!==st)return 'Die Anmeldung konnte nicht zugeordnet werden (bitte noch einmal anmelden).';
-  try{await tokenRequest({grant_type:'authorization_code',code:code,redirect_uri:REDIRECT,code_verifier:pk.verifier});return null;}catch(e){return e.message;}
+  try{await tokenRequest({grant_type:'authorization_code',code:code,redirect_uri:REDIRECT,code_verifier:pk.verifier,scope:scope()+' openid profile'});return null;}catch(e){return e.message;}
 }
 let refreshing=null;
 async function token(force){
@@ -124,7 +127,9 @@ async function token(force){
     try{return await refreshing;}catch(e){if(!e.auth)throw e;}}       // Netzfehler weiterreichen; abgelaufene Anmeldung -> neu anmelden
   const e=new Error('Anmeldung nötig');e.needLogin=true;throw e;
 }
-function logout(){ls.del('tok');ls.del('cfg');ls.del('cfgid');loginScreen();}
+function logout(){ls.del('tok');ls.del('cfg');ls.del('cfgid');ls.del('had');ls.del('user');loginScreen();}
+// Microsoft lässt die Anmeldung bei Web-Apps nach 24 Stunden ablaufen: dann ohne Umweg neu anmelden (höchstens ein Versuch in 2 Minuten, sonst Knopf zeigen)
+function relogin(msg){const last=+(ls.get('auto')||0);if(ls.get('had')&&clientId()&&Date.now()-last>120000){ls.set('auto',String(Date.now()));loading('Anmeldung wird erneuert …');login();}else loginScreen(msg);}
 
 // ---------------------------------------------------------------- OneDrive (Microsoft Graph)
 async function graph(path,opt,retry){
@@ -200,23 +205,23 @@ const mergeZ=(remote,local)=>{remote=remote||{};local=local||{};const o={version
 let cur=null;      // {app, etag, pending, timer, busy, html, mod}
 function status(kind,text,title){const s=$('#stat');s.className=kind||'';s.textContent=text;s.title=title||'';}
 const stand=()=>cur&&cur.mod?'Stand '+new Date(cur.mod).toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit'}):'';
-function save(payload){const c=cur;if(!c)return;c.pending=payload;ls.set('pend-'+c.app.id,JSON.stringify(payload));status('busy','Speichert …');clearTimeout(c.timer);c.timer=setTimeout(()=>flush(c),700);}
+function save(payload){const c=cur;if(!c)return;c.pending=payload;c.z=payload;ls.set('pend-'+c.app.id,JSON.stringify(payload));status('busy','Speichert …');clearTimeout(c.timer);c.timer=setTimeout(()=>flush(c),700);}
 async function flush(c){
   if(!c||!c.pending)return true; if(c.busy){c.again=true;return false;}
   c.busy=true;clearTimeout(c.timer);const p=c.pending;let reload=null;
   try{
     const m=await meta(c.app,c.app.z); let body=p;
-    if(m&&m.eTag!==c.etag){body=mergeZ(JSON.parse(await content(m)),p);reload=body;}      // inzwischen von einem anderen Gerät geändert -> zusammenführen
+    if(m&&m.eTag!==c.etag){body=mergeZ(JSON.parse(await content(m)),p);reload=body;c.z=body;}      // inzwischen von einem anderen Gerät geändert -> zusammenführen
     const m2=await putJson(c.app,c.app.z,body); c.etag=m2.eTag;
     if(c.pending===p){c.pending=null;ls.del('pend-'+c.app.id);if(cur===c)status('','✓ Gespeichert',stand());}
     c.err=null;
   }catch(e){
     c.err=e; if(cur===c)status('err','Nicht gespeichert – tippen',e.message);
-    if(e.needLogin){c.busy=false;loginScreen('Deine Anmeldung ist abgelaufen. Deine letzte Änderung ist vorgemerkt und wird nach der Anmeldung gespeichert.');return false;}
+    if(e.needLogin){c.busy=false;relogin('Deine Anmeldung ist abgelaufen. Deine letzte Änderung ist vorgemerkt und wird nach der Anmeldung gespeichert.');return false;}
   }
   c.busy=false;
   if(!c.err&&(c.again||c.pending)){c.again=false;return flush(c);}
-  if(!c.err&&reload&&cur===c)show(c,reload);
+  if(!c.err&&reload&&cur===c)show(c,reload,true);
   return !c.err;
 }
 addEventListener('online',()=>{if(cur&&cur.pending)flush(cur);});
@@ -225,11 +230,12 @@ document.addEventListener('visibilitychange',()=>{if(document.visibilityState===
 // ---------------------------------------------------------------- App laden und anzeigen
 function tabs(){const t=$('#tabs');t.replaceChildren();CONFIG.apps.forEach(a=>{const b=el('button',cur&&cur.app.id===a.id?'on':'',a.name);b.type='button';b.onclick=()=>{if(!cur||cur.app.id!==a.id)open(a);};t.append(b);});$('#bar').hidden=false;}
 let blobUrl=null;
-function show(c,z){
+function show(c,z,keep){
+  c.z=z||null; let hash=''; if(keep){try{hash=$('#frame').contentWindow.location.hash||'';}catch(e){}}
   window.FJ_BRIDGE={z:z||null,save:save,app:c.app.id};
   const html=c.html.replace('<head>','<head><script>try{window.FJ_STORE=parent.FJ_BRIDGE||null}catch(e){}<\/script>');
   if(blobUrl)URL.revokeObjectURL(blobUrl); blobUrl=URL.createObjectURL(new Blob([html],{type:'text/html'}));
-  const f=$('#frame'); f.src=blobUrl; $('#screen').hidden=true; f.hidden=false;
+  const f=$('#frame'); f.src=blobUrl+hash; $('#screen').hidden=true; f.hidden=false;
 }
 let opening=0;
 async function open(app){
@@ -241,9 +247,10 @@ async function open(app){
     catch(e){if(e.needLogin)throw e; if(!cached)throw e; offline=true;}
     if(my!==opening)return;
     if(!offline&&!mh){showError('Datei nicht gefunden',fullName(app,app.html)+'\n\nIn diesem OneDrive gibt es die Datei nicht. Bist du mit dem richtigen Microsoft-Konto angemeldet?',[['Nochmal versuchen',()=>open(app)],['Abmelden',logout]]);status('err','Fehlt');return;}
-    if(offline){c.html=cached.text;c.mod=cached.mod;}
-    else if(cached&&cached.tag===mh.eTag){c.html=cached.text;c.mod=mh.lastModifiedDateTime;}
-    else{c.html=await content(mh);c.mod=mh.lastModifiedDateTime;cachePut(app,mh.eTag,c.mod,c.html);}
+    if(offline){c.html=cached.text;c.mod=cached.mod;c.htag=cached.tag;}
+    else if(cached&&cached.tag===mh.eTag){c.html=cached.text;c.mod=mh.lastModifiedDateTime;c.htag=mh.eTag;}
+    else{c.html=await content(mh);c.mod=mh.lastModifiedDateTime;c.htag=mh.eTag;cachePut(app,mh.eTag,c.mod,c.html);}
+    c.checked=Date.now();
     let z=null; if(mz){try{z=JSON.parse(await content(mz));c.etag=mz.eTag;}catch(e){z=null;}}
     const pend=JSON.parse(ls.get('pend-'+app.id)||'null');
     if(pend){z=mergeZ(z,pend);c.pending=z;}            // beim letzten Mal nicht mehr gespeichert -> jetzt nachholen
@@ -252,10 +259,32 @@ async function open(app){
     if(c.pending&&!offline)flush(c);
   }catch(e){
     if(my!==opening)return;
-    if(e.needLogin){loginScreen();return;}
+    if(e.needLogin){relogin();return;}
     status('err','Fehler'); showError('Das hat nicht geklappt',e.message,[['Nochmal versuchen',()=>open(app)],['Abmelden',logout]]);
   }
 }
+// Beim Zurückwechseln zur App: Hat ein anderes Gerät etwas geändert oder lief ein Update? Dann still neu laden (Ansicht bleibt).
+async function check(){
+  const c=cur; if(!c||!c.html||c.busy||c.pending||c.checking||Date.now()-(c.checked||0)<20000||$('#frame').hidden)return;
+  c.checking=true;
+  try{
+    const [mh,mz]=await Promise.all([meta(c.app,c.app.html),meta(c.app,c.app.z)]); c.checked=Date.now();
+    const htmlNew=!!mh&&mh.eTag!==c.htag, zNew=(mz?mz.eTag:null)!==c.etag;
+    if(cur!==c||c.pending||c.busy||(!htmlNew&&!zNew))return;
+    let open_=false; try{const sh=$('#frame').contentDocument.querySelector('#sheet');open_=!!sh&&!sh.hidden;}catch(e){}
+    if(open_){c.checked=0;return;}                      // gerade ein Umsatz/Vertrag geöffnet: nicht stören, beim nächsten Mal
+    let html=c.html, z=c.z;
+    if(htmlNew)html=await content(mh);
+    if(zNew)z=mz?JSON.parse(await content(mz)):null;
+    if(cur!==c||c.pending||c.busy)return;
+    if(htmlNew){c.html=html;c.htag=mh.eTag;c.mod=mh.lastModifiedDateTime;cachePut(c.app,mh.eTag,c.mod,html);}
+    if(zNew)c.etag=mz?mz.eTag:null;
+    show(c,z,true); status('','↻ Aktualisiert',stand());
+  }catch(e){if(e.needLogin&&document.visibilityState==='visible')relogin();}
+  finally{c.checking=false;}
+}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')check();});
+addEventListener('focus',()=>check()); addEventListener('pageshow',()=>check());
 $('#stat').onclick=()=>{if(cur&&cur.pending)flush(cur);};
 $('#menu').onclick=()=>{const s=$('#sheet-in');s.replaceChildren();s.append(el('h1',null,'Finanzen'));
   const p=el('p');p.append(el('small','dim','Zuordnungen werden direkt in deinem OneDrive gespeichert; das Update rechnet sie beim nächsten Lauf fest ein.'));s.append(p);
@@ -268,9 +297,9 @@ async function start(){
   const err=await handleRedirect();
   if(!clientId()){setupScreen();return;}
   if(err){loginScreen(err);return;}
-  try{await token();}catch(e){if(e.needLogin){loginScreen();return;}}      // Netzfehler: trotzdem weiter, evtl. reicht der Zwischenspeicher
+  try{await token();}catch(e){if(e.needLogin){relogin();return;}}      // Netzfehler: trotzdem weiter, evtl. reicht der Zwischenspeicher
   loading();
-  try{await loadConfig();}catch(e){if(e.needLogin){loginScreen();return;}if(e.noConfig){configScreen();return;}showError('Das hat nicht geklappt',e.message,[['Nochmal versuchen',()=>start()],['Ordner / Freigabe-Links ändern',()=>configScreen(true)],['Abmelden',logout]]);return;}
+  try{await loadConfig();}catch(e){if(e.needLogin){relogin();return;}if(e.noConfig){configScreen();return;}showError('Das hat nicht geklappt',e.message,[['Nochmal versuchen',()=>start()],['Ordner / Freigabe-Links ändern',()=>configScreen(true)],['Abmelden',logout]]);return;}
   open(CONFIG.apps.find(a=>a.id===ls.get('app'))||CONFIG.apps[0]);
 }
 start();
