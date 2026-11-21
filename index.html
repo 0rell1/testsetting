@@ -31,7 +31,7 @@ body{font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;backgrou
 .box h1{font-size:19px;margin:0 0 8px}
 .box p{margin:8px 0;color:#42506b}
 .box code{display:block;background:#f1f4f9;border-radius:10px;padding:9px 11px;font-size:12.5px;word-break:break-all;margin:6px 0;user-select:all}
-.box input{width:100%;font:inherit;padding:11px 12px;border:1px solid var(--line);border-radius:12px;margin:6px 0 10px}
+.box input,.box textarea{width:100%;font:inherit;padding:11px 12px;border:1px solid var(--line);border-radius:12px;margin:6px 0 10px}
 .btn{display:block;width:100%;border:0;border-radius:12px;background:var(--navy);color:#fff;font:inherit;font-weight:600;padding:12px;cursor:pointer;margin-top:10px}
 .btn.sec{background:#eef1f6;color:var(--fg)}
 .err{color:#a12b1d;font-size:13px;white-space:pre-wrap;word-break:break-word;background:#fff3f1;border-radius:10px;padding:9px 11px}
@@ -54,15 +54,25 @@ small.dim{color:#6b7890}
 // ---------------------------------------------------------------- Einstellungen
 // Diese Seite enthält weder Daten noch persönliche Angaben. Nach der Anmeldung sucht sie im OneDrive des angemeldeten Kontos
 // nach der Einstellungsdatei (CFGNAME) und lädt von dort, welche Apps es gibt und wo deren Dateien liegen.
+// Liegen die Dateien im OneDrive einer anderen Person, werden stattdessen Freigabe-Links der Ordner hinterlegt (nur auf dem Gerät);
+// jeder freigegebene Ordner enthält dafür eine kleine Beschreibungsdatei (SHARENAME): {"name":"Tab-Name","html":"App.html","z":"Zuordnungen_….json"}
+// oder {"apps":[{"name":…,"dir":"Unterordner/…","html":…,"z":…}]} für mehrere Apps in Unterordnern
 // Format der Einstellungsdatei: {"root":"Ordner","apps":[{"id":"a","name":"Tab-Name","dir":"Unterordner/…","html":"App.html","z":"Zuordnungen_….json"}]}
-const CFGNAME='finanzwebappconfig.json';
+const CFGNAME='finanzwebappconfig.json', SHARENAME='finanzwebapp.json';
 let CONFIG=null;
-const AUTH='https://login.microsoftonline.com/consumers/oauth2/v2.0', GRAPH='https://graph.microsoft.com/v1.0', SCOPE='Files.ReadWrite offline_access';
+const AUTH='https://login.microsoftonline.com/consumers/oauth2/v2.0', GRAPH='https://graph.microsoft.com/v1.0';
 const K='fw-', REDIRECT=location.origin+location.pathname.replace(/index\.html$/,'');
 const $=s=>document.querySelector(s);
 const el=(t,c,txt)=>{const e=document.createElement(t);if(c)e.className=c;if(txt!=null)e.textContent=txt;return e;};
 const ls={get:k=>{try{return localStorage.getItem(K+k);}catch(e){return null;}},set:(k,v)=>{try{localStorage.setItem(K+k,v);}catch(e){}},del:k=>{try{localStorage.removeItem(K+k);}catch(e){}}};
 const clientId=()=>ls.get('client')||'';
+const shareLinks=()=>{try{return JSON.parse(ls.get('shares')||'[]');}catch(e){return [];}};
+const parseLinks=t=>(t||'').split(/\s+/).filter(x=>/^https:\/\/\S+$/.test(x));
+// Für freigegebene Ordner anderer Personen braucht die Anmeldung die weitergehende Berechtigung (…All), sonst reicht der Zugriff auf die eigenen Dateien
+const scope=()=>(shareLinks().length?'Files.ReadWrite.All':'Files.ReadWrite')+' offline_access';
+function linkField(b){b.append(el('p',null,'Nur wenn die Finanz-Ordner im OneDrive einer anderen Person liegen: Freigabe-Links der Ordner (einer pro Zeile).'));
+  const t=el('textarea');t.rows=3;t.placeholder='https://1drv.ms/f/…';t.autocapitalize='off';t.spellcheck=false;t.value=shareLinks().join('\n');b.append(t);return t;}
+function setLinks(text){const v=parseLinks(text), old=shareLinks().join(' ');ls.set('shares',JSON.stringify(v));ls.del('cfg');ls.del('cfgid');return v.join(' ')!==old;}
 
 // ---------------------------------------------------------------- Bildschirme
 function screen(build){$('#frame').hidden=true;const s=$('#screen');s.hidden=false;const b=el('div','box');build(b);s.replaceChildren(b);}
@@ -74,7 +84,8 @@ function setupScreen(msg){$('#bar').hidden=true;screen(b=>{
   if(msg)b.append(el('div','err',msg));
   const i=el('input');i.placeholder='xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx';i.autocapitalize='off';i.autocomplete='off';i.spellcheck=false;i.value=ls.get('client')||'';b.append(i);
   b.append(el('p',null,'In der Registrierung muss als Umleitungs-URI (Typ „Single-Page-Anwendung“) genau diese Adresse stehen:'),el('code',null,REDIRECT));
-  const ok=el('button','btn','Speichern und anmelden');ok.onclick=()=>{const v=i.value.trim();if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)){setupScreen('Das sieht nicht nach einer Anwendungs-ID aus (Format 8-4-4-4-12 Zeichen).');return;}ls.set('client',v);login();};b.append(ok);});}
+  const lk=linkField(b);
+  const ok=el('button','btn','Speichern und anmelden');ok.onclick=()=>{const v=i.value.trim();if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)){setupScreen('Das sieht nicht nach einer Anwendungs-ID aus (Format 8-4-4-4-12 Zeichen).');return;}ls.set('client',v);setLinks(lk.value);ls.del('tok');login();};b.append(ok);});}
 function loginScreen(msg){$('#bar').hidden=true;screen(b=>{b.append(el('h1',null,'Finanzen'),el('p',null,'Melde dich mit deinem Microsoft-Konto an, damit die App deine Finanz-Dateien in OneDrive lesen und deine Zuordnungen dort speichern kann.'));
   if(msg)b.append(el('div','err',msg));
   const x=el('button','btn','Mit Microsoft anmelden');x.onclick=()=>login();b.append(x);
@@ -87,12 +98,12 @@ async function login(){
   if(!clientId()){setupScreen();return;}
   const verifier=rnd(48), state=rnd(12), challenge=b64u(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(verifier)));
   ls.set('pkce',JSON.stringify({verifier,state,t:Date.now()}));
-  const q=new URLSearchParams({client_id:clientId(),response_type:'code',redirect_uri:REDIRECT,response_mode:'query',scope:SCOPE,code_challenge:challenge,code_challenge_method:'S256',state});
+  const q=new URLSearchParams({client_id:clientId(),response_type:'code',redirect_uri:REDIRECT,response_mode:'query',scope:scope(),code_challenge:challenge,code_challenge_method:'S256',state});
   location.assign(AUTH+'/authorize?'+q.toString());
 }
 function storeTokens(j){const old=JSON.parse(ls.get('tok')||'{}');ls.set('tok',JSON.stringify({access:j.access_token,exp:Date.now()+(j.expires_in||3600)*1000,refresh:j.refresh_token||old.refresh||''}));}
 async function tokenRequest(params){
-  const r=await fetch(AUTH+'/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(Object.assign({client_id:clientId(),scope:SCOPE},params)).toString()});
+  const r=await fetch(AUTH+'/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(Object.assign({client_id:clientId(),scope:scope()},params)).toString()});
   const j=await r.json().catch(()=>({}));
   if(!r.ok||!j.access_token){const e=new Error((j.error||('HTTP '+r.status))+': '+(j.error_description||'').split('\r\n')[0]);e.auth=j.error||'fehler';throw e;}
   storeTokens(j);return j.access_token;
@@ -122,16 +133,35 @@ async function graph(path,opt,retry){
   if(r.status===401&&!retry)return graph(path,opt,true);
   return r;
 }
-const itemPath=(app,file)=>'/me/drive/root:/'+[CONFIG.root].concat(app.dir.split('/'),[file]).map(encodeURIComponent).join('/');
-const fullName=(app,file)=>'OneDrive › '+[CONFIG.root].concat(app.dir.split('/'),[file]).join(' › ');
+const itemPath=(app,file)=>app.drive?'/drives/'+encodeURIComponent(app.drive)+'/items/'+encodeURIComponent(app.item)+':/'+(app.dir||'').split('/').concat([file]).filter(Boolean).map(encodeURIComponent).join('/')
+  :'/me/drive/root:/'+[CONFIG.root].concat(app.dir.split('/'),[file]).filter(Boolean).map(encodeURIComponent).join('/');
+const fullName=(app,file)=>app.drive?'Freigegebener Ordner „'+app.name+'“ › '+file:'OneDrive › '+[CONFIG.root].concat(app.dir.split('/'),[file]).filter(Boolean).join(' › ');
 async function gErr(r,what){let d='';try{const j=await r.json();d=(j.error&&(j.error.code+': '+j.error.message))||'';}catch(e){}return new Error(what+' – OneDrive antwortet mit '+r.status+(d?' ('+d+')':''));}
 async function meta(app,file){const r=await graph(itemPath(app,file));if(r.status===404)return null;if(!r.ok)throw await gErr(r,file);return r.json();}
 async function content(m){const u=m['@microsoft.graph.downloadUrl'];if(!u)throw new Error('Kein Download-Link für '+m.name);const r=await fetch(u);if(!r.ok)throw new Error(m.name+' – Download fehlgeschlagen ('+r.status+')');return r.text();}
 async function putJson(app,file,obj){const r=await graph(itemPath(app,file)+':/content',{method:'PUT',headers:{'Content-Type':'text/plain'},body:JSON.stringify(obj,null,1)});if(!r.ok)throw await gErr(r,file);return r.json();}
 // Einstellungsdatei finden: gemerkte Datei -> eingegebener Pfad -> Suche nach dem Dateinamen
 const encPath=p=>p.split('/').filter(Boolean).map(encodeURIComponent).join('/');
-function validCfg(c){return c&&typeof c.root==='string'&&Array.isArray(c.apps)&&c.apps.length&&c.apps.every(a=>a.id&&a.name&&typeof a.dir==='string'&&a.html&&a.z);}
+function validCfg(c){return c&&typeof c.root==='string'&&Array.isArray(c.apps)&&c.apps.length&&c.apps.every(a=>a.id&&a.name&&(typeof a.dir==='string'||(a.drive&&a.item))&&a.html&&a.z);}
+const shareId=u=>'u!'+btoa(u).replace(/=+$/,'').replace(/\//g,'_').replace(/\+/g,'-');
+async function fetchShared(links){
+  const apps=[];
+  for(let i=0;i<links.length;i++){
+    const r=await graph('/shares/'+shareId(links[i])+'/driveItem',{headers:{Prefer:'redeemSharingLink'}});if(!r.ok)throw await gErr(r,'Freigabe-Link '+(i+1));
+    const it=await r.json(), drive=(it.parentReference&&it.parentReference.driveId)||(it.remoteItem&&it.remoteItem.parentReference&&it.remoteItem.parentReference.driveId), item=(it.remoteItem&&it.remoteItem.id)||it.id;
+    if(!(it.folder||(it.remoteItem&&it.remoteItem.folder)))throw new Error('Freigabe-Link '+(i+1)+' zeigt auf eine Datei. Bitte den Ordner freigeben.');
+    if(!drive||!item)throw new Error('Freigabe-Link '+(i+1)+': Der Ordner ließ sich nicht zuordnen.');
+    const a={drive:drive,item:item,name:it.name||('Ordner '+(i+1))}, m=await meta(a,SHARENAME);
+    if(!m)throw new Error('Im freigegebenen Ordner „'+a.name+'“ fehlt die Datei '+SHARENAME+'.');
+    let d=null;try{d=JSON.parse(await content(m));}catch(e){}
+    const list=d&&Array.isArray(d.apps)?d.apps:[d];        // ein Ordner = eine App, oder Liste mit Unterordnern (dir)
+    if(!list.length||!list.every(x=>x&&x.name&&x.html&&x.z))throw new Error('Die Datei '+SHARENAME+' im Ordner „'+a.name+'“ ist unvollständig.');
+    list.forEach((x,k)=>apps.push({id:'s'+String(item).replace(/[^0-9a-z]/gi,'').slice(-10)+k,name:x.name,drive:drive,item:item,dir:x.dir||'',html:x.html,z:x.z}));
+  }
+  const c={root:'',apps:apps};ls.set('cfg',JSON.stringify(c));return c;
+}
 async function fetchConfig(){
+  const links=shareLinks(); if(links.length)return fetchShared(links);
   let m=null; const id=ls.get('cfgid'), path=ls.get('cfgpath');
   if(id){const r=await graph('/me/drive/items/'+encodeURIComponent(id));if(r.ok)m=await r.json();}
   if(!m&&path){const r=await graph('/me/drive/root:/'+encPath(path));if(r.ok)m=await r.json();}
@@ -149,10 +179,12 @@ async function loadConfig(){
   CONFIG=await fetchConfig();
 }
 function configScreen(msg){$('#bar').hidden=true;screen(b=>{
-  b.append(el('h1',null,'Einstellungsdatei fehlt'),el('p',null,'In diesem OneDrive wurde die Datei „'+CFGNAME+'“ nicht gefunden. Ist sie neu, kann die Suche ein paar Minuten brauchen. Du kannst auch den Pfad direkt angeben:'));
-  if(msg)b.append(el('div','err',msg));
+  b.append(el('h1',null,msg===true?'Einstellungen':'Einstellungsdatei fehlt'),el('p',null,msg===true?'Pfad der Einstellungsdatei im eigenen OneDrive (leer = automatisch suchen):':'In diesem OneDrive wurde die Datei „'+CFGNAME+'“ nicht gefunden. Ist sie neu, kann die Suche ein paar Minuten brauchen. Du kannst auch den Pfad direkt angeben:'));
+  if(msg&&msg!==true)b.append(el('div','err',msg));
   const i=el('input');i.placeholder='Ordner/Unterordner/'+CFGNAME;i.autocapitalize='off';i.autocomplete='off';i.spellcheck=false;i.value=ls.get('cfgpath')||'';b.append(i);
-  const ok=el('button','btn','Nochmal suchen');ok.onclick=()=>{const v=i.value.trim().replace(/^\/+/,'');if(v)ls.set('cfgpath',v);else ls.del('cfgpath');start();};b.append(ok);
+  const lk=linkField(b);
+  const ok=el('button','btn','Übernehmen');ok.onclick=()=>{const v=i.value.trim().replace(/^\/+/,'');if(v)ls.set('cfgpath',v);else ls.del('cfgpath');
+    if(setLinks(lk.value)){ls.del('tok');login();}else start();};b.append(ok);
   const lo=el('button','btn sec','Abmelden');lo.onclick=logout;b.append(lo);});}
 // App-HTML zwischenspeichern (spart ~1,5 MB je Start, erlaubt Ansehen ohne Netz)
 const cacheKey=app=>new Request(REDIRECT+'__cache/'+app.id);
@@ -228,7 +260,7 @@ $('#stat').onclick=()=>{if(cur&&cur.pending)flush(cur);};
 $('#menu').onclick=()=>{const s=$('#sheet-in');s.replaceChildren();s.append(el('h1',null,'Finanzen'));
   const p=el('p');p.append(el('small','dim','Zuordnungen werden direkt in deinem OneDrive gespeichert; das Update rechnet sie beim nächsten Lauf fest ein.'));s.append(p);
   const add=(t,fn,sec)=>{const b=el('button','btn'+(sec?' sec':''),t);b.onclick=()=>{$('#sheet').hidden=true;fn();};s.append(b);};
-  add('Neu laden',()=>{if(cur)open(cur.app);}); add('Einstellungen neu einlesen',()=>{ls.del('cfg');ls.del('cfgid');start();},true); add('Abmelden',logout,true); add('Schließen',()=>{},true); $('#sheet').hidden=false;};
+  add('Neu laden',()=>{if(cur)open(cur.app);}); add('Einstellungen neu einlesen',()=>{ls.del('cfg');ls.del('cfgid');start();},true); add('Ordner / Freigabe-Links ändern',()=>configScreen(true),true); add('Abmelden',logout,true); add('Schließen',()=>{},true); $('#sheet').hidden=false;};
 $('#sheet').onclick=e=>{if(e.target.id==='sheet')$('#sheet').hidden=true;};
 
 async function start(){
@@ -238,7 +270,7 @@ async function start(){
   if(err){loginScreen(err);return;}
   try{await token();}catch(e){if(e.needLogin){loginScreen();return;}}      // Netzfehler: trotzdem weiter, evtl. reicht der Zwischenspeicher
   loading();
-  try{await loadConfig();}catch(e){if(e.needLogin){loginScreen();return;}if(e.noConfig){configScreen();return;}showError('Das hat nicht geklappt',e.message,[['Nochmal versuchen',()=>start()],['Abmelden',logout]]);return;}
+  try{await loadConfig();}catch(e){if(e.needLogin){loginScreen();return;}if(e.noConfig){configScreen();return;}showError('Das hat nicht geklappt',e.message,[['Nochmal versuchen',()=>start()],['Ordner / Freigabe-Links ändern',()=>configScreen(true)],['Abmelden',logout]]);return;}
   open(CONFIG.apps.find(a=>a.id===ls.get('app'))||CONFIG.apps[0]);
 }
 start();
