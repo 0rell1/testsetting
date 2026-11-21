@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Finanzen">
+<meta name="theme-color" content="#0f2a4a">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="icon" href="icon.png">
+<title>Finanzen</title>
+<style>
+:root{--navy:#0f2a4a;--mint:#12a150;--line:#e3e8ef;--bg:#f4f6fa;--fg:#14213a}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--fg);display:flex;flex-direction:column;padding-bottom:env(safe-area-inset-bottom)}
+#bar{flex:0 0 auto;display:flex;align-items:center;gap:6px;background:var(--navy);color:#fff;padding:calc(6px + env(safe-area-inset-top)) 8px 6px}
+#tabs{display:flex;gap:4px;flex:1;min-width:0;overflow-x:auto}
+#tabs button{border:0;background:transparent;color:#c9d6ea;font:inherit;font-size:14px;font-weight:600;padding:7px 11px;border-radius:999px;white-space:nowrap;cursor:pointer}
+#tabs button.on{background:rgba(255,255,255,.16);color:#fff}
+#stat{font-size:12px;white-space:nowrap;padding:5px 9px;border-radius:999px;background:rgba(255,255,255,.1);border:0;color:#fff;cursor:default}
+#stat.err{background:#c0392b;cursor:pointer}
+#stat.busy{background:#b7791f}
+#menu{border:0;background:transparent;color:#fff;font-size:20px;line-height:1;padding:4px 8px;cursor:pointer}
+#frame{flex:1 1 auto;width:100%;border:0;background:var(--bg);display:block;min-height:0}
+#screen{flex:1 1 auto;display:flex;align-items:center;justify-content:center;padding:24px;overflow:auto}
+.box{background:#fff;border:1px solid var(--line);border-radius:18px;padding:22px;max-width:460px;width:100%;box-shadow:0 6px 24px rgba(15,42,74,.08)}
+.box h1{font-size:19px;margin:0 0 8px}
+.box p{margin:8px 0;color:#42506b}
+.box code{display:block;background:#f1f4f9;border-radius:10px;padding:9px 11px;font-size:12.5px;word-break:break-all;margin:6px 0;user-select:all}
+.box input{width:100%;font:inherit;padding:11px 12px;border:1px solid var(--line);border-radius:12px;margin:6px 0 10px}
+.btn{display:block;width:100%;border:0;border-radius:12px;background:var(--navy);color:#fff;font:inherit;font-weight:600;padding:12px;cursor:pointer;margin-top:10px}
+.btn.sec{background:#eef1f6;color:var(--fg)}
+.err{color:#a12b1d;font-size:13px;white-space:pre-wrap;word-break:break-word;background:#fff3f1;border-radius:10px;padding:9px 11px}
+.spin{width:34px;height:34px;border:4px solid #d5dce8;border-top-color:var(--navy);border-radius:50%;animation:r 1s linear infinite;margin:0 auto 12px}
+@keyframes r{to{transform:rotate(360deg)}}
+#sheet{position:fixed;inset:0;background:rgba(10,20,40,.45);display:flex;align-items:flex-end;justify-content:center;z-index:9}
+#sheet[hidden],#frame[hidden],#screen[hidden],#bar[hidden]{display:none}
+#sheet .box{border-radius:18px 18px 0 0;padding-bottom:calc(22px + env(safe-area-inset-bottom))}
+small.dim{color:#6b7890}
+</style>
+</head>
+<body>
+<div id="bar" hidden><div id="tabs"></div><button id="stat" type="button"></button><button id="menu" type="button" aria-label="Menü">⋯</button></div>
+<iframe id="frame" title="Finanz-App" hidden></iframe>
+<div id="screen"><div class="box"><div class="spin"></div><p style="text-align:center">Lädt …</p></div></div>
+<div id="sheet" hidden><div class="box" id="sheet-in"></div></div>
+<script>
+(function(){
+'use strict';
+// ---------------------------------------------------------------- Einstellungen
+// Diese Seite enthält weder Daten noch persönliche Angaben. Nach der Anmeldung sucht sie im OneDrive des angemeldeten Kontos
+// nach der Einstellungsdatei (CFGNAME) und lädt von dort, welche Apps es gibt und wo deren Dateien liegen.
+// Format der Einstellungsdatei: {"root":"Ordner","apps":[{"id":"a","name":"Tab-Name","dir":"Unterordner/…","html":"App.html","z":"Zuordnungen_….json"}]}
+const CFGNAME='finanzwebappconfig.json';
+let CONFIG=null;
+const AUTH='https://login.microsoftonline.com/consumers/oauth2/v2.0', GRAPH='https://graph.microsoft.com/v1.0', SCOPE='Files.ReadWrite offline_access';
+const K='fw-', REDIRECT=location.origin+location.pathname.replace(/index\.html$/,'');
+const $=s=>document.querySelector(s);
+const el=(t,c,txt)=>{const e=document.createElement(t);if(c)e.className=c;if(txt!=null)e.textContent=txt;return e;};
+const ls={get:k=>{try{return localStorage.getItem(K+k);}catch(e){return null;}},set:(k,v)=>{try{localStorage.setItem(K+k,v);}catch(e){}},del:k=>{try{localStorage.removeItem(K+k);}catch(e){}}};
+const clientId=()=>ls.get('client')||'';
+
+// ---------------------------------------------------------------- Bildschirme
+function screen(build){$('#frame').hidden=true;const s=$('#screen');s.hidden=false;const b=el('div','box');build(b);s.replaceChildren(b);}
+const loading=t=>screen(b=>{b.append(el('div','spin'));const p=el('p',null,t||'Lädt …');p.style.textAlign='center';b.append(p);});
+function showError(title,detail,actions){screen(b=>{b.append(el('h1',null,title));if(detail)b.append(el('div','err',String(detail)));
+  (actions||[['Nochmal versuchen',()=>start()]]).forEach(([t,fn],i)=>{const x=el('button','btn'+(i?' sec':''),t);x.onclick=fn;b.append(x);});});}
+function setupScreen(msg){$('#bar').hidden=true;screen(b=>{
+  b.append(el('h1',null,'Einrichtung'),el('p',null,'Trage hier einmalig die Anwendungs-ID (Client-ID) aus deiner App-Registrierung bei Microsoft ein.'));
+  if(msg)b.append(el('div','err',msg));
+  const i=el('input');i.placeholder='xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx';i.autocapitalize='off';i.autocomplete='off';i.spellcheck=false;i.value=ls.get('client')||'';b.append(i);
+  b.append(el('p',null,'In der Registrierung muss als Umleitungs-URI (Typ „Single-Page-Anwendung“) genau diese Adresse stehen:'),el('code',null,REDIRECT));
+  const ok=el('button','btn','Speichern und anmelden');ok.onclick=()=>{const v=i.value.trim();if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)){setupScreen('Das sieht nicht nach einer Anwendungs-ID aus (Format 8-4-4-4-12 Zeichen).');return;}ls.set('client',v);login();};b.append(ok);});}
+function loginScreen(msg){$('#bar').hidden=true;screen(b=>{b.append(el('h1',null,'Finanzen'),el('p',null,'Melde dich mit deinem Microsoft-Konto an, damit die App deine Finanz-Dateien in OneDrive lesen und deine Zuordnungen dort speichern kann.'));
+  if(msg)b.append(el('div','err',msg));
+  const x=el('button','btn','Mit Microsoft anmelden');x.onclick=()=>login();b.append(x);
+  const y=el('button','btn sec','Anwendungs-ID ändern');y.onclick=()=>setupScreen();b.append(y);});}
+
+// ---------------------------------------------------------------- Anmeldung (OAuth 2.0, Authorization Code + PKCE)
+const b64u=buf=>btoa(String.fromCharCode.apply(null,new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const rnd=n=>b64u(crypto.getRandomValues(new Uint8Array(n)));
+async function login(){
+  if(!clientId()){setupScreen();return;}
+  const verifier=rnd(48), state=rnd(12), challenge=b64u(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(verifier)));
+  ls.set('pkce',JSON.stringify({verifier,state,t:Date.now()}));
+  const q=new URLSearchParams({client_id:clientId(),response_type:'code',redirect_uri:REDIRECT,response_mode:'query',scope:SCOPE,code_challenge:challenge,code_challenge_method:'S256',state});
+  location.assign(AUTH+'/authorize?'+q.toString());
+}
+function storeTokens(j){const old=JSON.parse(ls.get('tok')||'{}');ls.set('tok',JSON.stringify({access:j.access_token,exp:Date.now()+(j.expires_in||3600)*1000,refresh:j.refresh_token||old.refresh||''}));}
+async function tokenRequest(params){
+  const r=await fetch(AUTH+'/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(Object.assign({client_id:clientId(),scope:SCOPE},params)).toString()});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok||!j.access_token){const e=new Error((j.error||('HTTP '+r.status))+': '+(j.error_description||'').split('\r\n')[0]);e.auth=j.error||'fehler';throw e;}
+  storeTokens(j);return j.access_token;
+}
+async function handleRedirect(){
+  const p=new URLSearchParams(location.search); if(!p.has('code')&&!p.has('error'))return null;
+  const clean=()=>{try{history.replaceState(null,'',REDIRECT);}catch(e){}};
+  if(p.has('error')){const m=p.get('error')+': '+(p.get('error_description')||'');clean();return m;}
+  const pk=JSON.parse(ls.get('pkce')||'null'); ls.del('pkce'); const code=p.get('code'), st=p.get('state'); clean();
+  if(!pk||pk.state!==st)return 'Die Anmeldung konnte nicht zugeordnet werden (bitte noch einmal anmelden).';
+  try{await tokenRequest({grant_type:'authorization_code',code:code,redirect_uri:REDIRECT,code_verifier:pk.verifier});return null;}catch(e){return e.message;}
+}
+let refreshing=null;
+async function token(force){
+  const t=JSON.parse(ls.get('tok')||'null');
+  if(t&&!force&&t.access&&t.exp>Date.now()+60000)return t.access;
+  if(t&&t.refresh){if(!refreshing)refreshing=tokenRequest({grant_type:'refresh_token',refresh_token:t.refresh}).finally(()=>{refreshing=null;});
+    try{return await refreshing;}catch(e){if(!e.auth)throw e;}}       // Netzfehler weiterreichen; abgelaufene Anmeldung -> neu anmelden
+  const e=new Error('Anmeldung nötig');e.needLogin=true;throw e;
+}
+function logout(){ls.del('tok');ls.del('cfg');ls.del('cfgid');loginScreen();}
+
+// ---------------------------------------------------------------- OneDrive (Microsoft Graph)
+async function graph(path,opt,retry){
+  const tk=await token(retry); opt=opt||{};
+  const r=await fetch(GRAPH+path,Object.assign({},opt,{headers:Object.assign({Authorization:'Bearer '+tk},opt.headers||{})}));
+  if(r.status===401&&!retry)return graph(path,opt,true);
+  return r;
+}
+const itemPath=(app,file)=>'/me/drive/root:/'+[CONFIG.root].concat(app.dir.split('/'),[file]).map(encodeURIComponent).join('/');
+const fullName=(app,file)=>'OneDrive › '+[CONFIG.root].concat(app.dir.split('/'),[file]).join(' › ');
+async function gErr(r,what){let d='';try{const j=await r.json();d=(j.error&&(j.error.code+': '+j.error.message))||'';}catch(e){}return new Error(what+' – OneDrive antwortet mit '+r.status+(d?' ('+d+')':''));}
+async function meta(app,file){const r=await graph(itemPath(app,file));if(r.status===404)return null;if(!r.ok)throw await gErr(r,file);return r.json();}
+async function content(m){const u=m['@microsoft.graph.downloadUrl'];if(!u)throw new Error('Kein Download-Link für '+m.name);const r=await fetch(u);if(!r.ok)throw new Error(m.name+' – Download fehlgeschlagen ('+r.status+')');return r.text();}
+async function putJson(app,file,obj){const r=await graph(itemPath(app,file)+':/content',{method:'PUT',headers:{'Content-Type':'text/plain'},body:JSON.stringify(obj,null,1)});if(!r.ok)throw await gErr(r,file);return r.json();}
+// Einstellungsdatei finden: gemerkte Datei -> eingegebener Pfad -> Suche nach dem Dateinamen
+const encPath=p=>p.split('/').filter(Boolean).map(encodeURIComponent).join('/');
+function validCfg(c){return c&&typeof c.root==='string'&&Array.isArray(c.apps)&&c.apps.length&&c.apps.every(a=>a.id&&a.name&&typeof a.dir==='string'&&a.html&&a.z);}
+async function fetchConfig(){
+  let m=null; const id=ls.get('cfgid'), path=ls.get('cfgpath');
+  if(id){const r=await graph('/me/drive/items/'+encodeURIComponent(id));if(r.ok)m=await r.json();}
+  if(!m&&path){const r=await graph('/me/drive/root:/'+encPath(path));if(r.ok)m=await r.json();}
+  if(!m){const r=await graph("/me/drive/root/search(q='"+CFGNAME.replace(/\.json$/,'')+"')?$select=id,name");if(!r.ok)throw await gErr(r,'Suche nach der Einstellungsdatei');
+    const hit=((await r.json()).value||[]).find(x=>(x.name||'').toLowerCase()===CFGNAME);
+    if(hit){const r2=await graph('/me/drive/items/'+encodeURIComponent(hit.id));if(r2.ok)m=await r2.json();}}
+  if(!m){const e=new Error('Einstellungsdatei nicht gefunden');e.noConfig=true;throw e;}
+  let c=null;try{c=JSON.parse(await content(m));}catch(e){}
+  if(!validCfg(c))throw new Error('Die Einstellungsdatei '+CFGNAME+' ist nicht lesbar oder unvollständig.');
+  ls.set('cfg',JSON.stringify(c));ls.set('cfgid',m.id);return c;
+}
+async function loadConfig(){
+  const c=JSON.parse(ls.get('cfg')||'null');
+  if(validCfg(c)){CONFIG=c;fetchConfig().catch(()=>{});return;}       // gemerkten Stand nutzen, im Hintergrund auffrischen (gilt ab dem nächsten Start)
+  CONFIG=await fetchConfig();
+}
+function configScreen(msg){$('#bar').hidden=true;screen(b=>{
+  b.append(el('h1',null,'Einstellungsdatei fehlt'),el('p',null,'In diesem OneDrive wurde die Datei „'+CFGNAME+'“ nicht gefunden. Ist sie neu, kann die Suche ein paar Minuten brauchen. Du kannst auch den Pfad direkt angeben:'));
+  if(msg)b.append(el('div','err',msg));
+  const i=el('input');i.placeholder='Ordner/Unterordner/'+CFGNAME;i.autocapitalize='off';i.autocomplete='off';i.spellcheck=false;i.value=ls.get('cfgpath')||'';b.append(i);
+  const ok=el('button','btn','Nochmal suchen');ok.onclick=()=>{const v=i.value.trim().replace(/^\/+/,'');if(v)ls.set('cfgpath',v);else ls.del('cfgpath');start();};b.append(ok);
+  const lo=el('button','btn sec','Abmelden');lo.onclick=logout;b.append(lo);});}
+// App-HTML zwischenspeichern (spart ~1,5 MB je Start, erlaubt Ansehen ohne Netz)
+const cacheKey=app=>new Request(REDIRECT+'__cache/'+app.id);
+async function cacheGet(app){try{const c=await caches.open('fw-html');const r=await c.match(cacheKey(app));if(!r)return null;return {tag:r.headers.get('x-tag'),mod:r.headers.get('x-mod'),text:await r.text()};}catch(e){return null;}}
+async function cachePut(app,tag,mod,text){try{const c=await caches.open('fw-html');await c.put(cacheKey(app),new Response(text,{headers:{'Content-Type':'text/html; charset=utf-8','x-tag':tag||'','x-mod':mod||''}}));}catch(e){}}
+
+// ---------------------------------------------------------------- Zuordnungen speichern
+const mergeZ=(remote,local)=>{remote=remote||{};local=local||{};const o={version:2,app:local.app||remote.app||'',erstellt:new Date().toISOString()};
+  for(const k of ['rules','ids','notes'])o[k]=Object.assign({},remote[k]||{},local[k]||{});
+  o.vertraege=Object.assign({},remote.vertraege||{});
+  for(const [id,v] of Object.entries(local.vertraege||{})){const r=o.vertraege[id];if(!r||(v.geaendert||'')>=(r.geaendert||''))o.vertraege[id]=v;}
+  return o;};
+let cur=null;      // {app, etag, pending, timer, busy, html, mod}
+function status(kind,text,title){const s=$('#stat');s.className=kind||'';s.textContent=text;s.title=title||'';}
+const stand=()=>cur&&cur.mod?'Stand '+new Date(cur.mod).toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit'}):'';
+function save(payload){const c=cur;if(!c)return;c.pending=payload;ls.set('pend-'+c.app.id,JSON.stringify(payload));status('busy','Speichert …');clearTimeout(c.timer);c.timer=setTimeout(()=>flush(c),700);}
+async function flush(c){
+  if(!c||!c.pending)return true; if(c.busy){c.again=true;return false;}
+  c.busy=true;clearTimeout(c.timer);const p=c.pending;let reload=null;
+  try{
+    const m=await meta(c.app,c.app.z); let body=p;
+    if(m&&m.eTag!==c.etag){body=mergeZ(JSON.parse(await content(m)),p);reload=body;}      // inzwischen von einem anderen Gerät geändert -> zusammenführen
+    const m2=await putJson(c.app,c.app.z,body); c.etag=m2.eTag;
+    if(c.pending===p){c.pending=null;ls.del('pend-'+c.app.id);if(cur===c)status('','✓ Gespeichert',stand());}
+    c.err=null;
+  }catch(e){
+    c.err=e; if(cur===c)status('err','Nicht gespeichert – tippen',e.message);
+    if(e.needLogin){c.busy=false;loginScreen('Deine Anmeldung ist abgelaufen. Deine letzte Änderung ist vorgemerkt und wird nach der Anmeldung gespeichert.');return false;}
+  }
+  c.busy=false;
+  if(!c.err&&(c.again||c.pending)){c.again=false;return flush(c);}
+  if(!c.err&&reload&&cur===c)show(c,reload);
+  return !c.err;
+}
+addEventListener('online',()=>{if(cur&&cur.pending)flush(cur);});
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'&&cur&&cur.pending&&!cur.busy)flush(cur);});
+
+// ---------------------------------------------------------------- App laden und anzeigen
+function tabs(){const t=$('#tabs');t.replaceChildren();CONFIG.apps.forEach(a=>{const b=el('button',cur&&cur.app.id===a.id?'on':'',a.name);b.type='button';b.onclick=()=>{if(!cur||cur.app.id!==a.id)open(a);};t.append(b);});$('#bar').hidden=false;}
+let blobUrl=null;
+function show(c,z){
+  window.FJ_BRIDGE={z:z||null,save:save,app:c.app.id};
+  const html=c.html.replace('<head>','<head><script>try{window.FJ_STORE=parent.FJ_BRIDGE||null}catch(e){}<\/script>');
+  if(blobUrl)URL.revokeObjectURL(blobUrl); blobUrl=URL.createObjectURL(new Blob([html],{type:'text/html'}));
+  const f=$('#frame'); f.src=blobUrl; $('#screen').hidden=true; f.hidden=false;
+}
+let opening=0;
+async function open(app){
+  const my=++opening; if(cur&&cur.pending)await flush(cur);
+  const c={app:app,etag:null,pending:null,timer:0,busy:false,html:'',mod:''}; cur=c; ls.set('app',app.id); tabs(); status('','…'); loading(app.name+' wird geladen …');
+  try{
+    let mh=null,mz=null,offline=false; const cached=await cacheGet(app);
+    try{[mh,mz]=await Promise.all([meta(app,app.html),meta(app,app.z)]);}
+    catch(e){if(e.needLogin)throw e; if(!cached)throw e; offline=true;}
+    if(my!==opening)return;
+    if(!offline&&!mh){showError('Datei nicht gefunden',fullName(app,app.html)+'\n\nIn diesem OneDrive gibt es die Datei nicht. Bist du mit dem richtigen Microsoft-Konto angemeldet?',[['Nochmal versuchen',()=>open(app)],['Abmelden',logout]]);status('err','Fehlt');return;}
+    if(offline){c.html=cached.text;c.mod=cached.mod;}
+    else if(cached&&cached.tag===mh.eTag){c.html=cached.text;c.mod=mh.lastModifiedDateTime;}
+    else{c.html=await content(mh);c.mod=mh.lastModifiedDateTime;cachePut(app,mh.eTag,c.mod,c.html);}
+    let z=null; if(mz){try{z=JSON.parse(await content(mz));c.etag=mz.eTag;}catch(e){z=null;}}
+    const pend=JSON.parse(ls.get('pend-'+app.id)||'null');
+    if(pend){z=mergeZ(z,pend);c.pending=z;}            // beim letzten Mal nicht mehr gespeichert -> jetzt nachholen
+    if(my!==opening)return;
+    show(c,z); status(offline?'busy':'',offline?'Offline':stand(),offline?'Keine Verbindung – gezeigt wird der zuletzt geladene Stand':'');
+    if(c.pending&&!offline)flush(c);
+  }catch(e){
+    if(my!==opening)return;
+    if(e.needLogin){loginScreen();return;}
+    status('err','Fehler'); showError('Das hat nicht geklappt',e.message,[['Nochmal versuchen',()=>open(app)],['Abmelden',logout]]);
+  }
+}
+$('#stat').onclick=()=>{if(cur&&cur.pending)flush(cur);};
+$('#menu').onclick=()=>{const s=$('#sheet-in');s.replaceChildren();s.append(el('h1',null,'Finanzen'));
+  const p=el('p');p.append(el('small','dim','Zuordnungen werden direkt in deinem OneDrive gespeichert; das Update rechnet sie beim nächsten Lauf fest ein.'));s.append(p);
+  const add=(t,fn,sec)=>{const b=el('button','btn'+(sec?' sec':''),t);b.onclick=()=>{$('#sheet').hidden=true;fn();};s.append(b);};
+  add('Neu laden',()=>{if(cur)open(cur.app);}); add('Einstellungen neu einlesen',()=>{ls.del('cfg');ls.del('cfgid');start();},true); add('Abmelden',logout,true); add('Schließen',()=>{},true); $('#sheet').hidden=false;};
+$('#sheet').onclick=e=>{if(e.target.id==='sheet')$('#sheet').hidden=true;};
+
+async function start(){
+  if(!window.crypto||!crypto.subtle){showError('Diese Seite braucht https','Bitte über die https-Adresse öffnen.',[]);return;}
+  const err=await handleRedirect();
+  if(!clientId()){setupScreen();return;}
+  if(err){loginScreen(err);return;}
+  try{await token();}catch(e){if(e.needLogin){loginScreen();return;}}      // Netzfehler: trotzdem weiter, evtl. reicht der Zwischenspeicher
+  loading();
+  try{await loadConfig();}catch(e){if(e.needLogin){loginScreen();return;}if(e.noConfig){configScreen();return;}showError('Das hat nicht geklappt',e.message,[['Nochmal versuchen',()=>start()],['Abmelden',logout]]);return;}
+  open(CONFIG.apps.find(a=>a.id===ls.get('app'))||CONFIG.apps[0]);
+}
+start();
+})();
+</script>
+</body>
+</html>
